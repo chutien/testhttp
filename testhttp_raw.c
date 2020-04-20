@@ -150,8 +150,9 @@ int getbuf_char() {
   getbuf();
   if (Blen == 0)
       return 0;
-  return Buffer[(Bi)++];
+  return Buffer[Bi++];
 }
+
 
 void ungetbuf_char() {
   if (Bi > 0)
@@ -161,16 +162,16 @@ void ungetbuf_char() {
 }
 
 
-void getbuf_ignore_until(char delimiter) {
+void getbuf_ignore_until(char c) {
   getbuf();
   if (Blen == 0)
     fatal("unexpected response");
   size_t d;
-  while ((d = findchar(Buffer + Bi, Blen - Bi, delimiter)) == Blen - Bi) {
+  while ((d = findchar(Buffer + Bi, Blen - Bi, c)) == Blen - Bi) {
     Bi = Blen;
     getbuf();
   }
-  getbuf_char();
+  Bi += d + 1;
 }
 
 
@@ -178,8 +179,8 @@ void getbuf_ignore_line() {
   getbuf_ignore_until('\r');
   if (getbuf_char() != '\n')
     fatal("unexpected response");
-  else
-    ungetbuf_char();
+  //  else
+  //  ungetbuf_char();
 }
 
 // TODO
@@ -334,9 +335,6 @@ void getbuf_cookie() {
 }
 
 size_t getbuf_header(const char *fields[], size_t fsize) {
-  size_t beg = 0;
-  size_t end = fsize;
-  size_t i = 0;
   int c = getbuf_char();
   if (c == '\r') {
     if (getbuf_char() == '\n')
@@ -344,21 +342,27 @@ size_t getbuf_header(const char *fields[], size_t fsize) {
     else
       fatal("unexpected response");
   }
-  while (beg < end && istchar(c)) {
+
+  size_t beg = 0;
+  size_t end = fsize;
+  size_t i = 0;
+  while (beg + 1 < end && istchar(c)) {
     c = tolower(c);
+    
     size_t p = beg;
     size_t k = end;
     while (p < k) {
-      size_t s = beg + (end - beg) / 2;
+      size_t s = p + (k - p) / 2;
       if (fields[s][i] < c)
 	p = s + 1;
       else
-	p = s;
+	k = s;
     }
+    
     beg = p;
     k = end;
     while (p < k) {
-      size_t s = beg + (end - beg) / 2;
+      size_t s = p + (k - p) / 2;
       if (fields[s][i] > c)
 	k = s;
       else
@@ -366,10 +370,27 @@ size_t getbuf_header(const char *fields[], size_t fsize) {
     }
     end = k;
     c = getbuf_char();
+    ++i;
+    fprintf(stderr, "\nbeg: %zu, end: %zu\n", beg, end);
   }
 
-  if (c == ':' && beg + 1 == end)
-    return beg;
+  if (beg + 1 == end) {
+    int ok = 1;
+    size_t flen = strlen(fields[beg]);
+    fprintf(stderr, "\n%zu %c\n", i, c);
+    for (; i < flen; ++i) {
+      c = tolower(c);
+      if (c != fields[beg][i]) {
+	ok = 0;
+	break;
+      }
+      c = getbuf_char();
+    }
+    if (ok && c == ':') {
+      getbuf_ows();
+      return beg;
+    }
+  }
   
   getbuf_ignore_until(':');
   getbuf_ows();
@@ -380,16 +401,21 @@ size_t getbuf_header(const char *fields[], size_t fsize) {
 void getbuf_headers() {
   static const char *fields[] = {"content-length", "set-cookie", "transfer-encoding"};
   static const size_t fsize = 3;
+  
   size_t i;
   while ((i = getbuf_header(fields, fsize)) <= fsize) {
+    fprintf(stderr, "\nLOGGING: c: %c, Bi: %zu, Blen: %zu, i: %zu\n", Buffer[Bi], Bi, Blen, i);
     switch (i) {
     case 0: // content-length
       break;
+
     case 1: // set-cookie
       getbuf_cookie();
       break;
+
     case 2: // transfer-encoding
       break;
+
     default:
       getbuf_ignore_line();
     }
@@ -446,6 +472,7 @@ int main(int argc, char *argv[]) {
     putchar('\n');
   } else {
     getbuf_ignore_line();
+    getbuf_headers();
   }
   
   if (close(Sock) < 0)

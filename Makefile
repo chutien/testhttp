@@ -11,4 +11,4 @@ testhttp_raw.o: testhttp_raw.c err.h
 testhttp_raw: testhttp_raw.o err.o
 
 clean:
-	rm -f *.o *~ $(TARGET) 
+	rm -f *.o *~ $(TARGETS) 
