@@ -18,11 +18,42 @@ size_t Bi;
 size_t Blen;
 
 
+
 size_t findchar(char *s, size_t len, char c) {
   size_t i = 0;
   while (i < len && s[i] != c)
     ++i;
   return i;
+}
+
+int istchar(int c) {
+  static const char other[] = {'!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~'};
+  static const size_t len = 15;
+  if (isalnum(c))
+    return 1;
+  size_t i;
+  for (i = 0; i < len; ++i) {
+    if (other[i] == c)
+      return 1;
+  }
+  return 0;
+}
+
+int isqdtext(int c) {
+  if (isblank(c) || c == 0x21 || (0x23 <= c && c <= 0x5B) || (0x5D <= c && c <= 0x7E)
+      || (0x80 <= c && c <= 0xFF))
+    return 1;
+  else
+    return 0;
+}
+
+int isquotedpair(int c1, int c2) {
+  if (c1 != '\\')
+    return 0;
+  if (isblank(c2) || (0x80 <= c2 && c2 <= 0xFF) || isprint(c2))
+    return 1;
+  else
+    return 0;
 }
 
 
@@ -44,13 +75,11 @@ void putbuf(const char *mes, size_t len) {
   }
 }
 
-
-void putbuf_requestline(char *httpaddr) {
+void putbuf_requestl(char *httpaddr) {
   putbuf("GET ", 4);
   putbuf(httpaddr, strlen(httpaddr));
   putbuf(" HTTP/1.1\r\n", 11);
 }
-
 
 void putbuf_host(char *httpaddr) {
   size_t i = 0;
@@ -72,7 +101,6 @@ void putbuf_host(char *httpaddr) {
   putbuf("\r\n", 2);
 }
 
-
 int putbuf_cookie(FILE *fp) {
   do {
     char *rp = fgets(Buffer + Bi, BSIZE - Bi, fp);
@@ -93,7 +121,6 @@ int putbuf_cookie(FILE *fp) {
   --Bi;
   return 0;
 }
-
 
 void putbuf_cookies(char *fname) {
   FILE *fp;
@@ -125,7 +152,6 @@ void putbuf_cookies(char *fname) {
     syserr("fclose");
 }
 
-
 void putbuf_end() {
   putbuf("\r\n", 2);
   if (Bi == 0)
@@ -145,7 +171,6 @@ void getbuf() {
     syserr("read");
 }
 
-
 int getbuf_char() {
   getbuf();
   if (Blen == 0)
@@ -153,14 +178,12 @@ int getbuf_char() {
   return Buffer[Bi++];
 }
 
-
 void ungetbuf_char() {
   if (Bi > 0)
     --Bi;
   else
     fatal("Cannot put char back anymore");
 }
-
 
 void getbuf_ignore_until(char c) {
   getbuf();
@@ -174,13 +197,41 @@ void getbuf_ignore_until(char c) {
   Bi += d + 1;
 }
 
-
 void getbuf_ignore_line() {
   getbuf_ignore_until('\r');
   if (getbuf_char() != '\n')
     fatal("unexpected response");
-  //  else
-  //  ungetbuf_char();
+}
+
+void getbuf_ows() {
+  int c;
+  do {
+    c = getbuf_char();
+    if (Blen == 0)
+      fatal("unexpected response");
+  } while (isblank(c));
+  ungetbuf_char();
+}
+
+void getbuf_printif(int (*f)(int)) {
+  do {
+    getbuf();
+    if (Blen == 0)
+      fatal("unexpected response");
+    size_t st = Bi;
+    while (Bi < Blen && (*f)(Buffer[Bi]))
+      ++Bi;
+    //    write(1, Buffer + st, Bi - st);
+    printf("%.*s", (int)(Bi - st), Buffer + st);
+  } while (Bi == Blen);
+}
+
+void getbuf_putsif(int (*f)(int)) {
+  char c;
+  while ((*f)(c = getbuf_char())) {
+    putchar(c);
+  }
+  ungetbuf_char();
 }
 
 // TODO
@@ -209,8 +260,7 @@ void getbuf_ignore_line() {
 /*   ++Bi; //TODO */
 /* } */
 
-
-int getbuf_statuscode() {
+int getbuf_responselok() {
   static const char *httpver = "HTTP/1.1 ";
   
   for (size_t i = 0; i < strlen(httpver); ++i) {
@@ -219,7 +269,7 @@ int getbuf_statuscode() {
       fatal("unexpected response");
   }
   
-  char status_code[4];
+  char status_code[3];
   for (size_t i = 0; i < 3; ++i) {
     status_code[i] = getbuf_char();
     if (Blen == 0 || !isdigit(status_code[i]))
@@ -230,107 +280,54 @@ int getbuf_statuscode() {
   if (Blen == 0 || !isspace(c))
     fatal("unexpected response");
 
-  status_code[3] = '\0';
-  return atoi(status_code);
-}
-
-
-int istchar(int c) {
-  static const char other[] = {'!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~'};
-  static const size_t len = 15;
-  if (isalnum(c))
+  if (memcmp(status_code, "200", 3) != 0) {
+    for (size_t i = 0; i < 3; ++i)
+      putchar(status_code[i]);
+    putchar(' ');
+    getbuf_putsif(isprint);
+    putchar('\n');
+    return 0;
+  } else {
+    getbuf_ignore_line();
     return 1;
-  size_t i;
-  for (i = 0; i < len; ++i) {
-    if (other[i] == c)
-      return 1;
   }
-  return 0;
 }
-
-
-int isqdtext(int c) {
-  if (isblank(c) || c == 0x21 || (0x23 <= c && c <= 0x27) || (0x2AA <= c && c <= 0x5B) || (0x5D <= c && c <= 0x7E)
-      || (0x80 <= c && c <= 0xFF))
-    return 1;
-  else
-    return 0;
-}
-
-
-int isquotedpair(int c1, int c2) {
-  if (c1 != '\\')
-    return 0;
-  if (isblank(c2) || (0x80 <= c2 && c2 <= 0xFF) || isprint(c2))
-    return 1;
-  else
-    return 0;
-}
-
-
-void getbuf_ows() {
-  int c;
-  do {
-    c = getbuf_char();
-    if (Blen == 0)
-      fatal("unexpected response");
-  } while (isblank(c));
-  ungetbuf_char();
-}
-
-
-void getbuf_printif(int (*f)(int)) {
-  do {
-    getbuf();
-    if (Blen == 0)
-      fatal("unexpected response");
-    size_t st = Bi;
-    while (Bi < Blen && (*f)(Buffer[Bi]))
-      ++Bi;
-    write(1, Buffer + st, Bi - st);
-  } while (Bi == Blen);
-}
-
 
 void getbuf_cookie() {
-  getbuf_printif(istchar);
+  getbuf_putsif(istchar);
 
   getbuf_ows();
 
   if (getbuf_char() != '=')
     fatal("unexpected response");
   putchar('=');
-  
+
   getbuf_ows();
 
   char c = getbuf_char();
   int isqstr = (c == '"');
-
   if (!isqstr) {
     if (!istchar(c))
       fatal("unexpected response");
     putchar(c);
-    getbuf_printif(istchar);
+    getbuf_putsif(istchar);
   } else {
     putchar('"');
     for (;;) {
-      getbuf_printif(isqdtext);
-      int c1 = getbuf_char();
-      if (c1 != '\\') {
-        if (c1 != '"')
-	  fatal("unexpected response");
-	putchar('"');
-	break;
+      getbuf_putsif(isqdtext);
+      if ((c = getbuf_char()) == '"') {
+	  putchar('"');
+	  break;
       }
-      int c2 = getbuf_char();
-      if (!isquotedpair(c1, c2))
-	putchar(c2);
+      int d = getbuf_char();
+      if (isquotedpair(c, d))
+	putchar(d);
       else
         fatal("unexpected response");
     }
   }
+  putchar('\n');
 
-  getbuf_ows();
   getbuf_ignore_line();
 }
 
@@ -346,6 +343,17 @@ size_t getbuf_header(const char *fields[], size_t fsize) {
   size_t beg = 0;
   size_t end = fsize;
   size_t i = 0;
+
+  /* while(istchar(c)) { */
+  /*   c = tolower(c); */
+  /*   while (fields[beg][i] > c) */
+  /*     ++beg; */
+  /*   size_t k = 0; */
+  /*   while (beg + k < end && fields[beg + k][i] < c) */
+  /*     ++k; */
+  /*   end = beg + k; */
+  /* } */
+  
   while (beg + 1 < end && istchar(c)) {
     c = tolower(c);
     
@@ -371,13 +379,12 @@ size_t getbuf_header(const char *fields[], size_t fsize) {
     end = k;
     c = getbuf_char();
     ++i;
-    fprintf(stderr, "\nbeg: %zu, end: %zu\n", beg, end);
   }
 
   if (beg + 1 == end) {
     int ok = 1;
     size_t flen = strlen(fields[beg]);
-    fprintf(stderr, "\n%zu %c\n", i, c);
+
     for (; i < flen; ++i) {
       c = tolower(c);
       if (c != fields[beg][i]) {
@@ -404,7 +411,6 @@ void getbuf_headers() {
   
   size_t i;
   while ((i = getbuf_header(fields, fsize)) <= fsize) {
-    fprintf(stderr, "\nLOGGING: c: %c, Bi: %zu, Blen: %zu, i: %zu\n", Buffer[Bi], Bi, Blen, i);
     switch (i) {
     case 0: // content-length
       break;
@@ -420,6 +426,10 @@ void getbuf_headers() {
       getbuf_ignore_line();
     }
   }
+}
+
+void getbuf_body() {
+  
 }
 
 
@@ -457,7 +467,7 @@ int main(int argc, char *argv[]) {
 
   Bi = 0;
 
-  putbuf_requestline(argv[3]);
+  putbuf_requestl(argv[3]);
   putbuf_host(argv[3]);
   putbuf("Connection:close\r\n", 18);
   putbuf_cookies(argv[2]);
@@ -466,13 +476,9 @@ int main(int argc, char *argv[]) {
   Bi = 0;
   Blen = 0;
   
-  int status_code = getbuf_statuscode();
-  if (status_code != 200) {
-    getbuf_printif(isprint);
-    putchar('\n');
-  } else {
-    getbuf_ignore_line();
+  if (getbuf_responselok()) {
     getbuf_headers();
+    getbuf_body();
   }
   
   if (close(Sock) < 0)
