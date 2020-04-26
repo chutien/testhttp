@@ -1,2 +1,2 @@
-ala=ma
-kota=ala
+ciastko1=czekoladowe
+ciastko2=zielone

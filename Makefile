@@ -1,14 +1,14 @@
+TARGET: testhttp_raw
+
 CC 	= gcc
-CFLAGS 	= -Wall
-TARGETS: testhttp_raw
+CFLAGS 	= -Wall -g -O2
+LFLAGS 	= -Wall -g
 
-all: $(TARGETS)
-
-err.o: err.c err.h
-
-testhttp_raw.o: testhttp_raw.c err.h
+testhttp_raw.o err.o: err.h
 
 testhttp_raw: testhttp_raw.o err.o
+	$(CC) $(LFLAGS) $^ -o $@
 
+.PHONY: clean TARGET
 clean:
-	rm -f *.o *~ $(TARGETS) 
+	rm -f testhttp_raw *.o *~ *.bak

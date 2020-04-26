@@ -8,22 +8,41 @@
 #include <unistd.h>
 #include <string.h>
 #include <ctype.h>
+#include <stdint.h>
 #include "err.h"
 
 #define BSIZE 4096
 
+/* Buffer */
 int Sock;
 char Buffer[BSIZE + 1];
 size_t Bi;
 size_t Blen;
 
+/* Headers */
+int ChunkedIsLast = 0;
 
+void putchar_check(int c) {
+  if (putchar(c) == EOF)
+    syserr("putchar");
+}
+
+void ignore_char(int c) {
+  return;
+}
 
 size_t findchar(char *s, size_t len, char c) {
   size_t i = 0;
   while (i < len && s[i] != c)
     ++i;
   return i;
+}
+
+int isnot_coma_cr(int c) {
+  if (c != ',' && c != '\r')
+    return 1;
+  else
+    return 0;
 }
 
 int istchar(int c) {
@@ -39,9 +58,30 @@ int istchar(int c) {
   return 0;
 }
 
+int isvchar(int c) {
+  if (0x21 <= c && c <= 0x7E)
+    return 1;
+  else
+    return 0;
+}
+
+int isobstext(int c) {
+  if (0x80 <= c && c <= 0xFF)
+    return 1;
+  else
+    return 0;
+}
+
+int is_blank_vchar_obs(int c) {
+  if (isblank(c) || isvchar(c) || isobstext(c))
+    return 1;
+  else
+    return 0;
+}
+
 int isqdtext(int c) {
   if (isblank(c) || c == 0x21 || (0x23 <= c && c <= 0x5B) || (0x5D <= c && c <= 0x7E)
-      || (0x80 <= c && c <= 0xFF))
+      || isobstext(c))
     return 1;
   else
     return 0;
@@ -50,12 +90,11 @@ int isqdtext(int c) {
 int isquotedpair(int c1, int c2) {
   if (c1 != '\\')
     return 0;
-  if (isblank(c2) || (0x80 <= c2 && c2 <= 0xFF) || isprint(c2))
+  if (is_blank_vchar_obs(c2))
     return 1;
   else
     return 0;
 }
-
 
 void putbuf(const char *mes, size_t len) {
   size_t i;
@@ -75,7 +114,7 @@ void putbuf(const char *mes, size_t len) {
   }
 }
 
-void putbuf_requestl(char *httpaddr) {
+void putbuf_request(char *httpaddr) {
   putbuf("GET ", 4);
   putbuf(httpaddr, strlen(httpaddr));
   putbuf(" HTTP/1.1\r\n", 11);
@@ -166,9 +205,10 @@ void getbuf() {
   if (Bi < Blen)
     return;
   Bi = 0;
-  Blen = read(Sock, Buffer, BSIZE);
-  if (Blen < 0)
+  ssize_t r = read(Sock, Buffer, BSIZE);
+  if (r < 0)
     syserr("read");
+  Blen = (size_t)r;
 }
 
 int getbuf_char() {
@@ -185,82 +225,45 @@ void ungetbuf_char() {
     fatal("Cannot put char back anymore");
 }
 
-void getbuf_ignore_until(char c) {
+size_t getbuf_ignore_until(char c) {
   getbuf();
   if (Blen == 0)
     fatal("unexpected response");
+  size_t ignored = 0;
   size_t d;
   while ((d = findchar(Buffer + Bi, Blen - Bi, c)) == Blen - Bi) {
+    ignored += d;
     Bi = Blen;
     getbuf();
   }
   Bi += d + 1;
+  return ignored + d;
 }
 
-void getbuf_ignore_line() {
-  getbuf_ignore_until('\r');
+size_t getbuf_ignore_line() {
+  size_t r = getbuf_ignore_until('\r');
   if (getbuf_char() != '\n')
     fatal("unexpected response");
+  return r;
 }
 
-void getbuf_ows() {
-  int c;
-  do {
+size_t getbuf_while(int (*f)(int), void (*g)(int)) {
+  size_t r = 0;
+  char c = getbuf_char();
+  if (Blen == 0)
+    fatal("unexpected response");
+  while ((*f)(c)) {
+    ++r;
+    g(c);
     c = getbuf_char();
     if (Blen == 0)
       fatal("unexpected response");
-  } while (isblank(c));
-  ungetbuf_char();
-}
-
-void getbuf_printif(int (*f)(int)) {
-  do {
-    getbuf();
-    if (Blen == 0)
-      fatal("unexpected response");
-    size_t st = Bi;
-    while (Bi < Blen && (*f)(Buffer[Bi]))
-      ++Bi;
-    //    write(1, Buffer + st, Bi - st);
-    printf("%.*s", (int)(Bi - st), Buffer + st);
-  } while (Bi == Blen);
-}
-
-void getbuf_putsif(int (*f)(int)) {
-  char c;
-  while ((*f)(c = getbuf_char())) {
-    putchar(c);
   }
   ungetbuf_char();
+  return r;
 }
 
-// TODO
-/* void getbuf_print_until(char delimiter) { */
-/*   if (Bi == Blen) { */
-/*     Bi = 0; */
-/*     Blen = read(Sock, Buffer, BSIZE); */
-/*     if (Blen < 0) */
-/*       syserr("read"); */
-/*     if (Blen == 0) */
-/*       fatal("unexpected response"); */
-/*   } */
-/*   size_t d;  */
-/*   while ((d = findchar(Buffer + Bi, Blen, delimiter)) < 0) { */
-/*     write(1, Buffer + Bi, Blen); */
-/*     Bi = 0; */
-/*     if ((Blen = read(Sock, Buffer, BSIZE)) < 0) */
-/*       syserr("read"); */
-/*     if (Blen == 0) */
-/*       fatal("unexpected response"); */
-/*   } */
-/*   if (write(1, Buffer + Bi, Bi + d) < 0) */
-/*     syserr("write"); */
-/*   if (putchar('\n') == EOF) */
-/*     syserr("putchar"); */
-/*   ++Bi; //TODO */
-/* } */
-
-int getbuf_responselok() {
+int getbuf_response_line_ok() {
   static const char *httpver = "HTTP/1.1 ";
   
   for (size_t i = 0; i < strlen(httpver); ++i) {
@@ -284,8 +287,9 @@ int getbuf_responselok() {
     for (size_t i = 0; i < 3; ++i)
       putchar(status_code[i]);
     putchar(' ');
-    getbuf_putsif(isprint);
+    getbuf_while(is_blank_vchar_obs, putchar_check);
     putchar('\n');
+    getbuf_ignore_line();
     return 0;
   } else {
     getbuf_ignore_line();
@@ -294,15 +298,17 @@ int getbuf_responselok() {
 }
 
 void getbuf_cookie() {
-  getbuf_putsif(istchar);
+  getbuf_while(isblank, ignore_char);
+  
+  getbuf_while(istchar, putchar_check);
 
-  getbuf_ows();
+  getbuf_while(isblank, ignore_char);
 
   if (getbuf_char() != '=')
     fatal("unexpected response");
   putchar('=');
 
-  getbuf_ows();
+  getbuf_while(isblank, ignore_char);
 
   char c = getbuf_char();
   int isqstr = (c == '"');
@@ -310,11 +316,11 @@ void getbuf_cookie() {
     if (!istchar(c))
       fatal("unexpected response");
     putchar(c);
-    getbuf_putsif(istchar);
+    getbuf_while(istchar, putchar_check);
   } else {
     putchar('"');
     for (;;) {
-      getbuf_putsif(isqdtext);
+      getbuf_while(isqdtext, putchar_check);
       if ((c = getbuf_char()) == '"') {
 	  putchar('"');
 	  break;
@@ -331,105 +337,163 @@ void getbuf_cookie() {
   getbuf_ignore_line();
 }
 
+void getbuf_transfer_encoding() {
+  static const char *strchunked = "chunked";
+  static const size_t len = 7;
+  
+  for (;;) {
+    getbuf_while(isblank, ignore_char);
+  
+    size_t i;
+    for (i = 0; i < len; ++i) {
+      int c = getbuf_char();
+      if (Blen == 0)
+	fatal("unexpected response");
+      if (tolower(c) != strchunked[i]) {
+	ungetbuf_char();
+	break;
+      }
+    }
+
+    ChunkedIsLast = (i == len);
+    getbuf_while(isnot_coma_cr, ignore_char);
+    
+    int c = getbuf_char();
+
+    if (Blen == 0)
+      fatal("unexpected response");
+    if (c == '\r') {
+      if (getbuf_char() != '\n')
+	fatal("unexpected response");
+      else
+	return;
+    }
+  }
+}
+
 size_t getbuf_header(const char *fields[], size_t fsize) {
   int c = getbuf_char();
+  if (Blen == 0)
+    fatal("unexpected response");
+
+  if (c == ':')
+    fatal("unexpected response");
+  
   if (c == '\r') {
     if (getbuf_char() == '\n')
-      return fsize + 1;
+      return fsize + 1; // no more headers
     else
       fatal("unexpected response");
   }
-
-  size_t beg = 0;
-  size_t end = fsize;
-  size_t i = 0;
-
-  /* while(istchar(c)) { */
-  /*   c = tolower(c); */
-  /*   while (fields[beg][i] > c) */
-  /*     ++beg; */
-  /*   size_t k = 0; */
-  /*   while (beg + k < end && fields[beg + k][i] < c) */
-  /*     ++k; */
-  /*   end = beg + k; */
-  /* } */
   
-  while (beg + 1 < end && istchar(c)) {
-    c = tolower(c);
-    
-    size_t p = beg;
-    size_t k = end;
-    while (p < k) {
-      size_t s = p + (k - p) / 2;
-      if (fields[s][i] < c)
-	p = s + 1;
-      else
-	k = s;
-    }
-    
-    beg = p;
-    k = end;
-    while (p < k) {
-      size_t s = p + (k - p) / 2;
-      if (fields[s][i] > c)
-	k = s;
-      else
-	p = s + 1;
-    }
-    end = k;
+  size_t n = 0;
+  for (size_t i = 0; i < fsize; ++i) {
+    size_t m = strlen(fields[i]);
+    if (n < m)
+      n = m;
+  }
+
+  char *op = malloc(n + 1);
+  size_t l;
+  for (l = 0; l < n && c != ':'; ++l) {
+    op[l] = tolower(c);
     c = getbuf_char();
-    ++i;
+    if (Blen == 0)
+      fatal("unexpected response");
   }
-
-  if (beg + 1 == end) {
-    int ok = 1;
-    size_t flen = strlen(fields[beg]);
-
-    for (; i < flen; ++i) {
-      c = tolower(c);
-      if (c != fields[beg][i]) {
-	ok = 0;
-	break;
-      }
-      c = getbuf_char();
-    }
-    if (ok && c == ':') {
-      getbuf_ows();
-      return beg;
-    }
-  }
+  op[l] = '\0';
   
-  getbuf_ignore_until(':');
-  getbuf_ows();
-  return fsize;
+  if (c == ':') {
+    size_t res;
+    for (res = 0; res < fsize; ++res) {
+      if (strcmp(op, fields[res]) == 0)
+        break;
+    }
+    free(op);
+    return res;
+  } else {
+    free(op);
+    getbuf_ignore_until(':');
+    return fsize;
+  }
 }
 
-
 void getbuf_headers() {
-  static const char *fields[] = {"content-length", "set-cookie", "transfer-encoding"};
-  static const size_t fsize = 3;
+  static const char *fields[] = {"set-cookie", "transfer-encoding"}; // must be sorted
+  static const size_t fsize = 2;
   
   size_t i;
   while ((i = getbuf_header(fields, fsize)) <= fsize) {
     switch (i) {
-    case 0: // content-length
-      break;
-
-    case 1: // set-cookie
+    case 0:
       getbuf_cookie();
       break;
-
-    case 2: // transfer-encoding
+    case 1:
+      getbuf_transfer_encoding();
       break;
-
     default:
       getbuf_ignore_line();
     }
   }
 }
 
+size_t getbuf_body_normal() {
+  size_t total_size = 0;
+  for (;;) {
+    getbuf();
+    if (Blen == 0)
+      return total_size;
+    size_t r = Blen - Bi;
+    if (total_size > SIZE_MAX - r)
+      fatal("Message body too big");
+    total_size += r;
+    Bi = Blen;
+  }
+}
+
+size_t getbuf_chunk_size() {
+  size_t chunk_size = 0;
+  int c = getbuf_char();
+  if (Blen == 0)
+    fatal("unexpected response");
+  while (isdigit(c)) {
+    if (chunk_size > (SIZE_MAX / 10))
+      fatal("Chunk size overflow1");
+    chunk_size *= 10;
+    size_t d = c - '0';
+    if (chunk_size > SIZE_MAX - d)
+      fatal("Chunk size overflow2");
+    chunk_size += d;
+    c = getbuf_char();
+    if (Blen == 0)
+      fatal("unexpected response");
+  }
+  ungetbuf_char();
+  return chunk_size;
+}
+
+size_t getbuf_body_chunked() {
+  size_t total_size = 0;
+  size_t chunk_size = getbuf_chunk_size();
+  getbuf_ignore_line();
+  while (chunk_size > 0) {
+    size_t real_chunk_size = getbuf_ignore_line();
+    if (total_size > SIZE_MAX - real_chunk_size)
+      fatal("Body size overflow");
+    total_size += real_chunk_size;
+    chunk_size = getbuf_chunk_size();
+    getbuf_ignore_line();
+  }
+  return total_size;
+}
+
 void getbuf_body() {
-  
+  size_t total_size;
+  if (ChunkedIsLast)
+    total_size = getbuf_body_chunked();
+  else
+    total_size = getbuf_body_normal();
+  printf("Dlugosc zasobu: %zu\n", total_size);
 }
 
 
@@ -467,7 +531,7 @@ int main(int argc, char *argv[]) {
 
   Bi = 0;
 
-  putbuf_requestl(argv[3]);
+  putbuf_request(argv[3]);
   putbuf_host(argv[3]);
   putbuf("Connection:close\r\n", 18);
   putbuf_cookies(argv[2]);
@@ -476,7 +540,7 @@ int main(int argc, char *argv[]) {
   Bi = 0;
   Blen = 0;
   
-  if (getbuf_responselok()) {
+  if (getbuf_response_line_ok()) {
     getbuf_headers();
     getbuf_body();
   }
