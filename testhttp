@@ -21,8 +21,7 @@ def main():
     if http == 'http':
         if ':' not in addr:
             addr += ':80'
-        print(['./testhttp_raw', addr, cookiesFile, testAddr])
-        run(['./testhttp_raw', addr, cookiesFile, testAddr], capture)
+        run(['./testhttp_raw', addr, cookiesFile, testAddr])
     elif http == 'https':
         if ':' not in addr:
             addr += ':443'
@@ -38,7 +37,7 @@ def main():
                        .format(pidPath, localAddr, addr))
         confFile.flush()
         os.fsync(confFile)
-        run(['stunnel', confPath])
+        run(['stunnel', confPath], check=True)
         run(['./testhttp_raw', localAddr, cookiesFile, testAddr])
         with open(pidPath, 'r') as pidFile:
             pid = int(pidFile.readline())
