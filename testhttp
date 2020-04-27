@@ -1,0 +1,52 @@
+#!/usr/bin/env python
+
+import os
+import sys
+import tempfile
+from subprocess import run
+from signal import SIGKILL
+import time
+
+localAddr = '127.0.0.1:3333'
+
+def main():
+    if (len(sys.argv) != 3):
+        print('Usage: {} <plik ciasteczek> <testowany adres http>'.format(sys.argv[0]), file=sys.stderr)
+
+    cookiesFile = sys.argv[1]
+    testAddr = sys.argv[2]
+    [http, restAddr] = testAddr.split('://')
+    addr = restAddr.split('/')[0]
+    
+    if http == 'http':
+        if ':' not in addr:
+            addr += ':80'
+        print(['./testhttp_raw', addr, cookiesFile, testAddr])
+        run(['./testhttp_raw', addr, cookiesFile, testAddr], capture)
+    elif http == 'https':
+        if ':' not in addr:
+            addr += ':443'
+        stunnelDir = tempfile.TemporaryDirectory()
+        confPath = stunnelDir.name + '/stunnel.conf'
+        pidPath = stunnelDir.name + '/stunnel.pid'
+        confFile = open(confPath, 'w+')
+        confFile.write('pid = {}\n'
+                       '[service]\n'
+                       'client = yes\n'
+                       'accept = {}\n'
+                       'connect = {}\n'
+                       .format(pidPath, localAddr, addr))
+        confFile.flush()
+        os.fsync(confFile)
+        run(['stunnel', confPath])
+        run(['./testhttp_raw', localAddr, cookiesFile, testAddr])
+        with open(pidPath, 'r') as pidFile:
+            pid = int(pidFile.readline())
+        os.kill(pid, SIGKILL)
+        confFile.close()
+        stunnelDir.cleanup()
+    else:
+        print('Incorrect address', file=sys.stderr)
+
+if __name__ == '__main__':
+    main();

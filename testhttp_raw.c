@@ -22,6 +22,17 @@ size_t Blen;
 /* Headers */
 int ChunkedIsLast = 0;
 
+size_t hex_char(int c) {
+  c = tolower(c);
+  if ('a' <= c && c <= 'f')
+    return c - 'a' + 10;
+  else if ('0' <= c && c <= '9')
+    return c - '0';
+  else
+    fatal("incorrect char");
+  return 0;
+}
+
 void putchar_check(int c) {
   if (putchar(c) == EOF)
     syserr("putchar");
@@ -36,6 +47,13 @@ size_t findchar(char *s, size_t len, char c) {
   while (i < len && s[i] != c)
     ++i;
   return i;
+}
+
+int isnot_lf(int c) {
+  if (c != '\n')
+    return 1;
+  else
+    return 0;
 }
 
 int isnot_coma_cr(int c) {
@@ -164,7 +182,9 @@ int putbuf_cookie(FILE *fp) {
 void putbuf_cookies(char *fname) {
   FILE *fp;
   fp = fopen(fname, "r");
-
+  if (!fp)
+    syserr("fopen");
+  
   int c = fgetc(fp);
   if (ferror(fp))
     syserr("fgetc");
@@ -223,6 +243,23 @@ void ungetbuf_char() {
     --Bi;
   else
     fatal("Cannot put char back anymore");
+}
+
+void getbuf_crlf() {
+  int cr = getbuf_char();
+  if (Blen == 0 || cr != '\r')
+    fatal("unexpected response");
+  int lf = getbuf_char();
+  if (Blen == 0 || lf != '\n')
+    fatal("unexpected response");
+}
+
+void getbuf_ignore(size_t n) {
+  for (size_t i = 0; i < n; ++i) {
+    getbuf_char();
+    if (Blen == 0)
+      fatal("unexpected error");
+  }
 }
 
 size_t getbuf_ignore_until(char c) {
@@ -456,33 +493,33 @@ size_t getbuf_chunk_size() {
   int c = getbuf_char();
   if (Blen == 0)
     fatal("unexpected response");
-  while (isdigit(c)) {
-    if (chunk_size > (SIZE_MAX / 10))
-      fatal("Chunk size overflow1");
-    chunk_size *= 10;
-    size_t d = c - '0';
+  while (isxdigit(c)) {
+    if (chunk_size > (SIZE_MAX / 16))
+      fatal("Chunk size overflow");
+    chunk_size *= 16;
+    size_t d = hex_char(c);
     if (chunk_size > SIZE_MAX - d)
-      fatal("Chunk size overflow2");
+      fatal("Chunk size overflow");
     chunk_size += d;
     c = getbuf_char();
     if (Blen == 0)
       fatal("unexpected response");
   }
   ungetbuf_char();
+  getbuf_ignore_line();
   return chunk_size;
 }
 
 size_t getbuf_body_chunked() {
   size_t total_size = 0;
   size_t chunk_size = getbuf_chunk_size();
-  getbuf_ignore_line();
   while (chunk_size > 0) {
-    size_t real_chunk_size = getbuf_ignore_line();
-    if (total_size > SIZE_MAX - real_chunk_size)
+    if (total_size > SIZE_MAX - chunk_size)
       fatal("Body size overflow");
-    total_size += real_chunk_size;
+    total_size += chunk_size;
+    getbuf_ignore(chunk_size);
+    getbuf_crlf();
     chunk_size = getbuf_chunk_size();
-    getbuf_ignore_line();
   }
   return total_size;
 }
@@ -514,7 +551,10 @@ int main(int argc, char *argv[]) {
   addr_hints.ai_socktype = SOCK_STREAM;
   addr_hints.ai_protocol = IPPROTO_TCP;
 
-  size_t d = findchar(argv[1], strlen(argv[1]), ':');
+  size_t argv1len = strlen(argv[1]);
+  size_t d = findchar(argv[1], argv1len, ':');
+  if (d + 1 >= argv1len)
+    fatal("missing port number");
   argv[1][d] = '\0';
   char *ser_addr = argv[1];
   char *ser_port = argv[1] + d + 1;
@@ -535,8 +575,10 @@ int main(int argc, char *argv[]) {
   putbuf_host(argv[3]);
   putbuf("Connection:close\r\n", 18);
   putbuf_cookies(argv[2]);
-  putbuf_end();
 
+  //Buffer[Bi] = '\0';
+  //fprintf(stderr, "%s", Buffer);
+  putbuf_end();
   Bi = 0;
   Blen = 0;
   

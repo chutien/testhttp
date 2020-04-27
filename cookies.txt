@@ -1,2 +1,0 @@
-ciastko1=czekoladowe
-ciastko2=zielone
