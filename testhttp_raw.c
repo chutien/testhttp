@@ -13,14 +13,15 @@
 
 #define BSIZE 4096
 
-/* Buffer */
+/** Buffer's variables. */
 int Sock;
 char Buffer[BSIZE + 1];
 size_t Bi;
 size_t Blen;
 
-/* Headers */
+/** Headers' variables. */
 int ChunkedIsLast = 0;
+
 
 size_t hex_char(int c) {
   c = tolower(c);
@@ -49,20 +50,7 @@ size_t findchar(char *s, size_t len, char c) {
   return i;
 }
 
-int isnot_lf(int c) {
-  if (c != '\n')
-    return 1;
-  else
-    return 0;
-}
-
-int isnot_coma_cr(int c) {
-  if (c != ',' && c != '\r')
-    return 1;
-  else
-    return 0;
-}
-
+/** Checks whether c is TCHAR as defined in RFC 7230. */
 int istchar(int c) {
   static const char other[] = {'!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~'};
   static const size_t len = 15;
@@ -76,6 +64,7 @@ int istchar(int c) {
   return 0;
 }
 
+/** Checks whether c is VCHAR as defined in RFC 7230. */
 int isvchar(int c) {
   if (0x21 <= c && c <= 0x7E)
     return 1;
@@ -83,6 +72,7 @@ int isvchar(int c) {
     return 0;
 }
 
+/** Checks whether c is obstext as defined in RFC 7230. */
 int isobstext(int c) {
   if (0x80 <= c && c <= 0xFF)
     return 1;
@@ -97,6 +87,7 @@ int is_blank_vchar_obs(int c) {
     return 0;
 }
 
+/** Checks whether is qdtext as defined in RFC 7230. */
 int isqdtext(int c) {
   if (isblank(c) || c == 0x21 || (0x23 <= c && c <= 0x5B) || (0x5D <= c && c <= 0x7E)
       || isobstext(c))
@@ -105,6 +96,7 @@ int isqdtext(int c) {
     return 0;
 }
 
+/** Checks whether is quoted-pair as defined in RFC 7230. */
 int isquotedpair(int c1, int c2) {
   if (c1 != '\\')
     return 0;
@@ -114,6 +106,8 @@ int isquotedpair(int c1, int c2) {
     return 0;
 }
 
+/** Buffering function - writes to Buffer 
+    and writes from it to socket if necessary. */
 void putbuf(const char *mes, size_t len) {
   size_t i;
   for (i = 0; i < len; ++i) {
@@ -218,9 +212,10 @@ void putbuf_end() {
   if (write(Sock, Buffer, Bi) < 0)
     syserr("write");
   Bi = 0;
+  Blen = 0;
 }
 
-
+/** Reads from socket to Buffer if needed.*/ 
 void getbuf() {
   if (Bi < Blen)
     return;
@@ -245,6 +240,22 @@ void ungetbuf_char() {
     fatal("Cannot put char back anymore");
 }
 
+size_t getbuf_while(int (*f)(int), void (*g)(int)) {
+  size_t r = 0;
+  char c = getbuf_char();
+  if (Blen == 0)
+    fatal("unexpected response");
+  while ((*f)(c)) {
+    ++r;
+    g(c);
+    c = getbuf_char();
+    if (Blen == 0)
+      fatal("unexpected response");
+  }
+  ungetbuf_char();
+  return r;
+}
+
 void getbuf_crlf() {
   int cr = getbuf_char();
   if (Blen == 0 || cr != '\r')
@@ -262,42 +273,52 @@ void getbuf_ignore(size_t n) {
   }
 }
 
-size_t getbuf_ignore_until(char c) {
-  getbuf();
-  if (Blen == 0)
+/** Process quoted-string (RFC 7230) using f.*/
+void getbuf_qstr(void (*f)(int)) {
+  int c = getbuf_char();
+  if (Blen == 0 || c != '"')
     fatal("unexpected response");
-  size_t ignored = 0;
-  size_t d;
-  while ((d = findchar(Buffer + Bi, Blen - Bi, c)) == Blen - Bi) {
-    ignored += d;
-    Bi = Blen;
-    getbuf();
-  }
-  Bi += d + 1;
-  return ignored + d;
-}
-
-size_t getbuf_ignore_line() {
-  size_t r = getbuf_ignore_until('\r');
-  if (getbuf_char() != '\n')
-    fatal("unexpected response");
-  return r;
-}
-
-size_t getbuf_while(int (*f)(int), void (*g)(int)) {
-  size_t r = 0;
-  char c = getbuf_char();
-  if (Blen == 0)
-    fatal("unexpected response");
-  while ((*f)(c)) {
-    ++r;
-    g(c);
+  f(c);
+  for (;;) {
+    getbuf_while(isqdtext, f);
     c = getbuf_char();
     if (Blen == 0)
       fatal("unexpected response");
+    if (c == '"') {
+      f(c);
+      return;
+    }
+    int d = getbuf_char();
+    if (!isquotedpair(c, d))
+      fatal("unexpected response");
+    f(d);
   }
-  ungetbuf_char();
-  return r;
+}
+
+/** Ignores until (and including) character d 
+    or CRLF taking into account quoted strings.
+    For d equal to -1 line is ignored. 
+    Returns 1 if d was found, 0 in case of CRLF.*/
+int getbuf_ignore_until(int d) {
+  if (Blen == 0)
+    fatal("unexpected response");
+  int c;
+  do {
+    c = getbuf_char();
+    if (Blen == 0)
+      fatal("unexpected response");
+    if (c == '"') {
+      ungetbuf_char();
+      getbuf_qstr(ignore_char);
+    }
+  } while ((d < 0 || c != d) && c != '\r');
+  if (d >= 0 && c == d) {
+    return 1;
+  } else {
+    ungetbuf_char();
+    getbuf_crlf();
+    return 0;
+  }
 }
 
 int getbuf_response_line_ok() {
@@ -322,56 +343,43 @@ int getbuf_response_line_ok() {
 
   if (memcmp(status_code, "200", 3) != 0) {
     for (size_t i = 0; i < 3; ++i)
-      putchar(status_code[i]);
-    putchar(' ');
+      putchar_check(status_code[i]);
+    putchar_check(' ');
     getbuf_while(is_blank_vchar_obs, putchar_check);
-    putchar('\n');
-    getbuf_ignore_line();
+    putchar_check('\n');
+    getbuf_ignore_until(-1);
     return 0;
   } else {
-    getbuf_ignore_line();
+    getbuf_ignore_until(-1);
     return 1;
   }
 }
 
 void getbuf_cookie() {
   getbuf_while(isblank, ignore_char);
-  
   getbuf_while(istchar, putchar_check);
-
   getbuf_while(isblank, ignore_char);
 
   if (getbuf_char() != '=')
     fatal("unexpected response");
-  putchar('=');
+  putchar_check('=');
 
   getbuf_while(isblank, ignore_char);
 
-  char c = getbuf_char();
-  int isqstr = (c == '"');
-  if (!isqstr) {
-    if (!istchar(c))
-      fatal("unexpected response");
-    putchar(c);
+  int c = getbuf_char();
+  if (Blen == 0)
+    fatal("unexpected response");
+  
+  if (c != '"') {
+    ungetbuf_char();
     getbuf_while(istchar, putchar_check);
   } else {
-    putchar('"');
-    for (;;) {
-      getbuf_while(isqdtext, putchar_check);
-      if ((c = getbuf_char()) == '"') {
-	  putchar('"');
-	  break;
-      }
-      int d = getbuf_char();
-      if (isquotedpair(c, d))
-	putchar(d);
-      else
-        fatal("unexpected response");
-    }
+    ungetbuf_char();
+    getbuf_qstr(putchar_check);
   }
-  putchar('\n');
-
-  getbuf_ignore_line();
+  
+  putchar_check('\n');
+  getbuf_ignore_until(-1);
 }
 
 void getbuf_transfer_encoding() {
@@ -391,20 +399,10 @@ void getbuf_transfer_encoding() {
 	break;
       }
     }
-
     ChunkedIsLast = (i == len);
-    getbuf_while(isnot_coma_cr, ignore_char);
-    
-    int c = getbuf_char();
 
-    if (Blen == 0)
-      fatal("unexpected response");
-    if (c == '\r') {
-      if (getbuf_char() != '\n')
-	fatal("unexpected response");
-      else
-	return;
-    }
+    if (!getbuf_ignore_until(','))
+      return;
   }
 }
 
@@ -456,7 +454,7 @@ size_t getbuf_header(const char *fields[], size_t fsize) {
 }
 
 void getbuf_headers() {
-  static const char *fields[] = {"set-cookie", "transfer-encoding"}; // must be sorted
+  static const char *fields[] = {"set-cookie", "transfer-encoding"};
   static const size_t fsize = 2;
   
   size_t i;
@@ -469,7 +467,7 @@ void getbuf_headers() {
       getbuf_transfer_encoding();
       break;
     default:
-      getbuf_ignore_line();
+      getbuf_ignore_until(-1);
     }
   }
 }
@@ -493,6 +491,7 @@ size_t getbuf_chunk_size() {
   int c = getbuf_char();
   if (Blen == 0)
     fatal("unexpected response");
+
   while (isxdigit(c)) {
     if (chunk_size > (SIZE_MAX / 16))
       fatal("Chunk size overflow");
@@ -505,8 +504,9 @@ size_t getbuf_chunk_size() {
     if (Blen == 0)
       fatal("unexpected response");
   }
+
   ungetbuf_char();
-  getbuf_ignore_line();
+  getbuf_ignore_until(-1);
   return chunk_size;
 }
 
@@ -575,12 +575,7 @@ int main(int argc, char *argv[]) {
   putbuf_host(argv[3]);
   putbuf("Connection:close\r\n", 18);
   putbuf_cookies(argv[2]);
-
-  //Buffer[Bi] = '\0';
-  //fprintf(stderr, "%s", Buffer);
   putbuf_end();
-  Bi = 0;
-  Blen = 0;
   
   if (getbuf_response_line_ok()) {
     getbuf_headers();
