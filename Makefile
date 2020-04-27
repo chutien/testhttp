@@ -1,8 +1,8 @@
 TARGET: testhttp_raw
 
 CC 	= gcc
-CFLAGS 	= -Wall -g -O2
-LFLAGS 	= -Wall -g
+CFLAGS 	= -Wall -O2
+LFLAGS 	= -Wall
 
 testhttp_raw.o err.o: err.h
 
